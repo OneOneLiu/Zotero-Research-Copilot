@@ -771,12 +771,9 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
 
           /* Loading Dots */
           .gemini-chat-bubble.loading {
-             background: transparent;
-             box-shadow: none;
-             padding: 0 10px;
-             margin-top: -8px;
-             display: flex;
-             gap: 4px;
+             padding: 12px 18px;
+             flex-direction: row;
+             gap: 5px;
              align-items: center;
           }
           .gemini-chat-dot {
@@ -792,6 +789,21 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
              0%, 80%, 100% { transform: scale(0); }
              40% { transform: scale(1); }
            }
+           .rc-loading-dots {
+             display: flex;
+             gap: 5px;
+             align-items: center;
+             padding: 4px 0;
+           }
+           .rc-loading-dot {
+             width: 6px;
+             height: 6px;
+             background-color: #b0b0b5;
+             border-radius: 50%;
+             animation: gemini-chat-bounce 1.4s infinite ease-in-out both;
+           }
+           .rc-loading-dot:nth-child(1) { animation-delay: -0.32s; }
+           .rc-loading-dot:nth-child(2) { animation-delay: -0.16s; }
            .gemini-chat-meta {
              font-size: 10px;
              color: rgba(255,255,255,0.7); /* Light on blue bubble? No, usually handles both */
@@ -1241,6 +1253,9 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
       const prevScrollTop = messageList.scrollTop;
       messageList.innerHTML = "";
       messages.forEach((m, index) => {
+        // Don't render the empty model placeholder — the loading dots handle that state
+        if (m.role === "model" && !m.text.trim()) return;
+
         const bubble = createElement("div");
         bubble.setAttribute("class", `gemini-chat-bubble ${m.role}`);
 
@@ -1325,8 +1340,10 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
         messageList.appendChild(bubble);
       });
 
-      // Show loading indicator if busy
-      if (addon.isBusy(itemKey)) {
+      // Show loading dots only while waiting for the first token
+      const lastMsg = messages[messages.length - 1];
+      const awaitingResponse = addon.isBusy(itemKey) && (!lastMsg || lastMsg.role !== "model" || !lastMsg.text.trim());
+      if (awaitingResponse) {
         const loadingBubble = createElement("div");
         loadingBubble.setAttribute("class", "gemini-chat-bubble model loading");
         loadingBubble.innerHTML = `

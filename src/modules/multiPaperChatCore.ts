@@ -942,7 +942,11 @@ function addMessageBubble(role: "user" | "model" | "system", html: string, markd
     el.dataset.rcCopyMd = markdownForCopy ?? "";
     const body = doc.createElement("div");
     body.className = "rc-bubble-body";
-    setChatInnerHTML(body, html);
+    if (html.trim()) {
+      setChatInnerHTML(body, html);
+    } else {
+      body.innerHTML = `<div class="rc-loading-dots"><div class="rc-loading-dot"></div><div class="rc-loading-dot"></div><div class="rc-loading-dot"></div></div>`;
+    }
     el.appendChild(body);
     const footer = doc.createElement("div");
     footer.className = "rc-copy-md-footer";

@@ -199,6 +199,25 @@
       border-radius: 12px;
       padding: 6px 12px;
     }
+    .rc-loading-dots {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      padding: 4px 0;
+    }
+    .rc-loading-dot {
+      width: 6px;
+      height: 6px;
+      background-color: #b0b0b5;
+      border-radius: 50%;
+      animation: rc-bounce 1.4s infinite ease-in-out both;
+    }
+    .rc-loading-dot:nth-child(1) { animation-delay: -0.32s; }
+    .rc-loading-dot:nth-child(2) { animation-delay: -0.16s; }
+    @keyframes rc-bounce {
+      0%, 80%, 100% { transform: scale(0); }
+      40% { transform: scale(1); }
+    }
     .msg h1, .msg h2, .msg h3 { color: #1d1d1f; }
     .msg h2 { font-size: 15px; margin: 14px 0 6px 0; padding-bottom: 3px; border-bottom: 1px solid #e5e5e5; }
     .msg h3 { font-size: 14px; margin: 10px 0 4px 0; }

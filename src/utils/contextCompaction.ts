@@ -96,7 +96,7 @@ function truncateToMaxTokens(text: string, maxTokens: number): string {
   return `${text.slice(0, maxChars)}\n\n[…truncated…]`;
 }
 
-export type CompactionCache = { summary: string; sourceHash: string };
+export type CompactionCache = { summary: string; sourceHash: string; olderCount?: number };
 
 export async function compactDialogMessagesForRequest(
   dialogMessages: readonly DialogMessage[],
@@ -105,7 +105,7 @@ export async function compactDialogMessagesForRequest(
     maxPromptTokens: number;
     extraPromptTokens: number;
     getCache: () => CompactionCache | undefined;
-    setCache: (summary: string, sourceHash: string) => void;
+    setCache: (summary: string, sourceHash: string, olderCount?: number) => void;
     summarizeConversation: (transcript: string) => Promise<string>;
     /** Optional: e.g. `(m) => Zotero.debug(m)` to verify compaction in Help → Debug Output. */
     logDebug?: (msg: string) => void;
@@ -136,8 +136,58 @@ export async function compactDialogMessagesForRequest(
 
   const olderHash = hashMessagesForCache(older);
   let cached = options.getCache();
-  let summary = cached?.sourceHash === olderHash ? cached.summary : "";
+  let summary = "";
 
+  // === Exact cache hit: older segment unchanged ===
+  if (cached?.sourceHash === olderHash && cached.summary) {
+    summary = cached.summary;
+    options.logDebug?.("[ResearchCopilot][contextCompaction] exact cache hit — reusing previous summary.");
+
+  // === Incremental update: older segment grew (prefix match) ===
+  } else if (
+    cached?.summary &&
+    cached.olderCount != null &&
+    cached.olderCount > 0 &&
+    cached.olderCount < older.length
+  ) {
+    // Check prefix: the first N messages should be unchanged
+    const prevOlder = older.slice(0, cached.olderCount);
+    const prevHash = hashMessagesForCache(prevOlder);
+    const isPrefix = prevHash === cached.sourceHash;
+
+    if (isPrefix) {
+      const newMsgs = older.slice(cached.olderCount);
+      const newTranscript = newMsgs
+        .map(m => (m.role === "user" ? "User" : "Assistant") + ": " + m.text)
+        .join("\n\n");
+      const deltaTokens = estimateDialogMessagesTokens(newMsgs);
+
+      options.logDebug?.(
+        `[ResearchCopilot][contextCompaction] incremental update: ${newMsgs.length} new message(s) (≈${deltaTokens} tokens) added to previous summary of ${cached.olderCount} messages`,
+      );
+
+      const updatePrompt = `You previously summarized an earlier segment of a conversation. Now ${newMsgs.length} new message(s) have been added to that older segment.
+
+Previous summary:
+${cached.summary}
+
+New messages to incorporate:
+${newTranscript}
+
+Update the summary to include the new information. Preserve: key facts, definitions, conclusions, unresolved questions, and paper/citation names. Be concise. Use the same language as the conversation.`;
+
+      try {
+        summary = await options.summarizeConversation(updatePrompt);
+      } catch (e) {
+        options.logDebug?.(`[ResearchCopilot][contextCompaction] incremental update failed, will try full: ${e}`);
+        summary = "";
+      }
+    } else {
+      options.logDebug?.("[ResearchCopilot][contextCompaction] prefix mismatch — will do full re-summarization.");
+    }
+  }
+
+  // === Full re-summarization (no cache or incremental failed) ===
   if (!summary) {
     const transcript = older
       .map(m => (m.role === "user" ? "User" : "Assistant") + ": " + m.text)
@@ -156,12 +206,12 @@ ${transcript}
       summary = "";
       options.logDebug?.(`[ResearchCopilot][contextCompaction] summarizeConversation failed: ${e}`);
     }
+  }
 
-    if (summary) {
-      const maxSummaryTokens = Math.min(8000, Math.floor(budget / 3));
-      summary = truncateToMaxTokens(summary.trim(), maxSummaryTokens);
-      options.setCache(summary, olderHash);
-    }
+  if (summary) {
+    const maxSummaryTokens = Math.min(8000, Math.floor(budget / 3));
+    summary = truncateToMaxTokens(summary.trim(), maxSummaryTokens);
+    options.setCache(summary, olderHash, older.length);
   }
 
   if (!summary) {

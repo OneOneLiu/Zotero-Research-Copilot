@@ -23,7 +23,17 @@ import {
   type RagIndex,
 } from "./ragIndex";
 import { searchChunksBalanced } from "./ragSearch";
-import { copyMarkdownToClipboard, initMathCopyListener, normalizeMarkdownForExport } from "./multiPaperChatCore";
+import {
+  copyMarkdownToClipboard,
+  initMathCopyListener,
+  normalizeMarkdownForExport,
+  callAI,
+  callAIStream as callAIStreamCore,
+  mergeUserAndTimeout,
+  rewriteQueryForSearch,
+  getFullAnalysisSettings,
+  ensureGlobals as ensureAnalysisGlobals,
+} from "./multiPaperChatCore";
 import {
   compactDialogMessagesForRequest,
   sliceRecentDialogMessages,
@@ -33,21 +43,22 @@ import {
   COMPACTION_SUMMARY_MARKER,
   type DialogMessage,
 } from "../utils/contextCompaction";
+import {
+  escapeHtml,
+  getBestPdfAttachment,
+  getPdfText,
+  getPdfBase64,
+  getFileData,
+  arrayBufferToBase64,
+} from "../utils/pdfHelpers";
 
-Zotero.debug("[GeminiChat] Loading readerPane module...");
+Zotero.debug("[ResearchCopilot] Loading readerPane module...");
 
 let md: any = null;
 let mermaidInitialized = false;
 let mermaidLib: any = null;
 
-function escapeHtml(text: string) {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
+// escapeHtml removed — using shared import from pdfHelpers.ts
 
 function encodeMermaidSource(text: string) {
   return encodeURIComponent(text);
@@ -89,7 +100,7 @@ async function getMermaidLib() {
     mermaidLib = mod?.default || mod;
     return mermaidLib;
   } catch (e) {
-    Zotero.debug(`[GeminiChat] Mermaid module load failed: ${e}`);
+    Zotero.debug(`[ResearchCopilot] Mermaid module load failed: ${e}`);
     return null;
   }
 }
@@ -127,7 +138,7 @@ async function renderMermaidInElement(root: HTMLElement) {
     try {
       diagramText = decodeMermaidSource(raw);
     } catch (e) {
-      Zotero.debug(`[GeminiChat] Mermaid decode failed: ${e}`);
+      Zotero.debug(`[ResearchCopilot] Mermaid decode failed: ${e}`);
       continue;
     }
 
@@ -138,7 +149,7 @@ async function renderMermaidInElement(root: HTMLElement) {
       node.setAttribute("data-rendered", "true");
       if (typeof bindFunctions === "function") bindFunctions(node);
     } catch (e) {
-      Zotero.debug(`[GeminiChat] Mermaid render failed: ${e}`);
+      Zotero.debug(`[ResearchCopilot] Mermaid render failed: ${e}`);
       node.classList.add("gemini-chat-mermaid-error");
       node.textContent = `Mermaid render error\n\n${diagramText}`;
       node.setAttribute("data-rendered", "true");
@@ -149,7 +160,7 @@ async function renderMermaidInElement(root: HTMLElement) {
 function getMarkdown() {
   if (!md) {
     try {
-      Zotero.debug("[GeminiChat] Initializing MarkdownIt...");
+      Zotero.debug("[ResearchCopilot] Initializing MarkdownIt...");
       md = new MarkdownIt({
         xhtmlOut: true, // Use '/' to close single tags (<br />)
         html: true,
@@ -163,14 +174,14 @@ function getMarkdown() {
               const out = hljs.highlight(str, { language: lang, ignoreIllegals: true }).value;
               return `<pre class="gemini-code-block hljs"><code>${out}</code></pre>`;
             } catch (e) {
-              Zotero.debug(`[GeminiChat] hljs language render failed (${lang}): ${e}`);
+              Zotero.debug(`[ResearchCopilot] hljs language render failed (${lang}): ${e}`);
             }
           }
           try {
             const out = hljs.highlightAuto(str).value;
             return `<pre class="gemini-code-block hljs"><code>${out}</code></pre>`;
           } catch (e) {
-            Zotero.debug(`[GeminiChat] hljs auto render failed: ${e}`);
+            Zotero.debug(`[ResearchCopilot] hljs auto render failed: ${e}`);
             return `<pre class="gemini-code-block"><code>${escapeHtml(str)}</code></pre>`;
           }
         },
@@ -190,7 +201,7 @@ function getMarkdown() {
         return self.renderToken(tokens, idx, options);
       };
 
-      Zotero.debug("[GeminiChat] Initializing TexMath...");
+      Zotero.debug("[ResearchCopilot] Initializing TexMath...");
       md.use(tm, {
         engine: katex,
         delimiters: ["dollars", "brackets"],
@@ -200,9 +211,9 @@ function getMarkdown() {
           throwOnError: false
         },
       });
-      Zotero.debug("[GeminiChat] MarkdownIt initialized success.");
+      Zotero.debug("[ResearchCopilot] MarkdownIt initialized success.");
     } catch (e) {
-      Zotero.debug(`[GeminiChat] Failed to init Markdown: ${e} `);
+      Zotero.debug(`[ResearchCopilot] Failed to init Markdown: ${e} `);
       md = {
         render: (text: string) => text,
       };
@@ -283,7 +294,7 @@ export function registerReaderPane(addon: Addon): string {
 
 export function registerSidebarButton(getPaneKey: () => string) {
   if (!Zotero.Reader) {
-    Zotero.debug("[GeminiChat] Zotero.Reader not found, skipping sidebar button registration.");
+    Zotero.debug("[ResearchCopilot] Zotero.Reader not found, skipping sidebar button registration.");
     return;
   }
   Zotero.Reader.registerEventListener(
@@ -322,7 +333,7 @@ export function registerSidebarButton(getPaneKey: () => string) {
         });
         append(btn);
       } catch (e) {
-        Zotero.debug(`[GeminiChat] Error in renderSidebarAnnotationHeader: ${e}`);
+        Zotero.debug(`[ResearchCopilot] Error in renderSidebarAnnotationHeader: ${e}`);
       }
     },
     config.addonID,
@@ -330,10 +341,10 @@ export function registerSidebarButton(getPaneKey: () => string) {
 }
 
 function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
-  Zotero.debug(`[GeminiChat] renderChat called for item ${item?.id}`);
+  Zotero.debug(`[ResearchCopilot] renderChat called for item ${item?.id}`);
 
   if (!item || !item.id) {
-    Zotero.debug("[GeminiChat] renderChat aborted: invalid item");
+    Zotero.debug("[ResearchCopilot] renderChat aborted: invalid item");
     return;
   }
 
@@ -359,7 +370,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
     try {
       currentSettings = getSettings();
     } catch (e) {
-      Zotero.debug(`[GeminiChat] Error getting settings: ${e}`);
+      Zotero.debug(`[ResearchCopilot] Error getting settings: ${e}`);
     }
 
     // Inject CSS
@@ -876,7 +887,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
         head.appendChild(link);
       }
     } catch (e) {
-      Zotero.debug(`[GeminiChat] CSS Inject Error: ${e}`);
+      Zotero.debug(`[ResearchCopilot] CSS Inject Error: ${e}`);
     }
 
     body.innerHTML = "";
@@ -966,7 +977,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
         prompts = JSON.parse(currentSettings.customPrompts);
       }
     } catch (e) {
-      Zotero.debug(`[GeminiChat] Error parsing prompts: ${e}`);
+      Zotero.debug(`[ResearchCopilot] Error parsing prompts: ${e}`);
     }
 
     if (prompts.length > 0 && Array.isArray(prompts)) {
@@ -1017,7 +1028,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
           // Let's put this inside header at the bottom?
           header.appendChild(loadContainer);
         }
-      }).catch(e => Zotero.debug(`[GeminiChat] Error loading history note: ${e}`));
+      }).catch(e => Zotero.debug(`[ResearchCopilot] Error loading history note: ${e}`));
     }
 
     // --- Messages ---
@@ -1082,13 +1093,13 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
               const currentNoteID = addon.getNoteID(itemKey);
               saveFullSessionToNote(item, messages, currentNoteID).then(id => {
                 if (id) addon.setNoteID(itemKey, id);
-              }).catch(e => Zotero.debug(`[GeminiChat] Auto-save highlight failed: ${e}`));
+              }).catch(e => Zotero.debug(`[ResearchCopilot] Auto-save highlight failed: ${e}`));
             }
           }
         }
 
       } catch (e) {
-        Zotero.debug(`[GeminiChat] Apply format error: ${e}`);
+        Zotero.debug(`[ResearchCopilot] Apply format error: ${e}`);
       }
     };
 
@@ -1389,7 +1400,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
     renderChips();
 
     const handleContextPicker = async () => {
-      Zotero.debug("[GeminiChat] handleContextPicker (Native) triggered");
+      Zotero.debug("[ResearchCopilot] handleContextPicker (Native) triggered");
       try {
         const mainWindow = Zotero.getMainWindow();
         if (!mainWindow) return;
@@ -1419,7 +1430,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
 
         if (io.dataOut) {
           const selection = io.dataOut;
-          Zotero.debug(`[GeminiChat] Native picker returned: ${Array.isArray(selection) ? selection.length : 'non-array'}`);
+          Zotero.debug(`[ResearchCopilot] Native picker returned: ${Array.isArray(selection) ? selection.length : 'non-array'}`);
 
           if (Array.isArray(selection)) {
             let addedCount = 0;
@@ -1452,7 +1463,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
           }
         }
       } catch (e) {
-        Zotero.debug(`[GeminiChat] Context Picker Error: ${e}`);
+        Zotero.debug(`[ResearchCopilot] Context Picker Error: ${e}`);
         // Fallback to manual selection if native fails completely?
         // confirm("Native picker failed. Use manual selection?") ... 
         // For now just log.
@@ -1554,7 +1565,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
         });
 
         Zotero.debug(
-          `[GeminiChat] Sidebar send: key=${itemKey} chips=${contextItems.length} pdfs=${allContextFiles.length} firstFull=${isFirstUserQuestion} parts=${contextParts.length}`,
+          `[ResearchCopilot] Sidebar send: key=${itemKey} chips=${contextItems.length} pdfs=${allContextFiles.length} firstFull=${isFirstUserQuestion} parts=${contextParts.length}`,
         );
 
         const paperTitles = allContextFiles.map(
@@ -1583,17 +1594,17 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
             maxPromptTokens: settings.contextMaxPromptTokens,
             extraPromptTokens,
             getCache: () => addon.data.compactionCache[itemKey],
-            setCache: (summary, sourceHash) => {
-              addon.data.compactionCache[itemKey] = { summary, sourceHash };
+            setCache: (summary, sourceHash, olderCount) => {
+              addon.data.compactionCache[itemKey] = { summary, sourceHash, olderCount };
             },
             summarizeConversation: async (transcript) => {
               const sumContents = [{ role: "user" as const, parts: [{ text: transcript }] }];
-              return callAINonStream(settings, sumContents, settings.model);
+              return callAINonStreamAdapter(settings, sumContents, settings.model);
             },
             logDebug: (m) => Zotero.debug(m),
           });
         } catch (e) {
-          Zotero.debug(`[GeminiChat] Context compaction failed, falling back to recent turns only: ${e}`);
+          Zotero.debug(`[ResearchCopilot] Context compaction failed, falling back to recent turns only: ${e}`);
           // Fallback: keep only recent turns (don't send full uncompressed history)
           const { recent } = sliceRecentDialogMessages(dialogRaw, settings.contextRecentTurns);
           compactedDialog = recent;
@@ -1622,7 +1633,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
             debugText += `  result: no change (all ${rawMsgCount} msgs kept)\n`;
           }
 
-          Zotero.debug(`[GeminiChat] ${debugText}`);
+          Zotero.debug(`[ResearchCopilot] ${debugText}`);
         }
 
         const contents: any[] = [
@@ -1708,7 +1719,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
             addon.setNoteID(itemKey, savedID);
           }
         } catch (e) {
-          Zotero.debug(`[GeminiChat] Auto-save failed: ${e}`);
+          Zotero.debug(`[ResearchCopilot] Auto-save failed: ${e}`);
         }
       }
     };
@@ -1722,7 +1733,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
     });
 
   } catch (error: any) {
-    Zotero.debug(`[GeminiChat] Render error: ${error}\n${error?.stack}`);
+    Zotero.debug(`[ResearchCopilot] Render error: ${error}\n${error?.stack}`);
     body.textContent = `Error rendering chat pane: ${error?.message || error}`;
   }
 }
@@ -1796,7 +1807,7 @@ async function saveFullSessionToNote(item: Zotero.Item, messages: ChatMessage[],
 async function saveToNote(item: Zotero.Item, question: string, answer: string) {
   const parentID = item.isAttachment() ? item.parentID : item.id;
   if (!parentID) {
-    Zotero.debug("[GeminiChat] Cannot save note: No parent item found.");
+    Zotero.debug("[ResearchCopilot] Cannot save note: No parent item found.");
     return;
   }
 
@@ -1815,7 +1826,7 @@ ${qHtml}
 ${aHtml}`);
 
   await note.saveTx();
-  Zotero.debug(`[GeminiChat] Note saved to item ${parentID}`);
+  Zotero.debug(`[ResearchCopilot] Note saved to item ${parentID}`);
 }
 
 async function getHistoryNote(item: Zotero.Item): Promise<Zotero.Item | null> {
@@ -1883,104 +1894,16 @@ function parseHistoryFromNote(html: string): ChatMessage[] {
 }
 
 export async function getPdfContextPart(item: Zotero.Item): Promise<{ mimeType: string; data: string } | null> {
-  const attachment = getBestAttachment(item);
-  if (!attachment) return null;
-
-  const path = await attachment.getFilePathAsync();
-  if (!path) return null;
-
-  try {
-    const data = await getFileData(path);
-    if (data) {
-      return {
-        mimeType: "application/pdf",
-        data
-      };
-    }
-  } catch (e) {
-    Zotero.debug(`[GeminiChat] Failed to read PDF: ${e}`);
-  }
-  return null;
+  return getPdfBase64(item);
 }
 
 /**
  * Extract text content from PDF for non-Gemini providers
  */
-export async function getPdfText(item: Zotero.Item): Promise<string | null> {
-  Zotero.debug("[GeminiChat] getPdfText called with item: " + item?.id);
+// getPdfText removed — using shared import from pdfHelpers.ts
 
-  // The item passed here is already an attachment
-  if (!item) {
-    Zotero.debug("[GeminiChat] No item provided for PDF text extraction");
-    return null;
-  }
-
-  try {
-    const itemID = item.id;
-    Zotero.debug("[GeminiChat] Attempting to extract text from item ID: " + itemID);
-
-    // Check if PDF has been indexed using the correct constant
-    // @ts-ignore
-    const indexedState = await Zotero.Fulltext.getIndexedState(item);
-    // @ts-ignore
-    const INDEX_STATE_INDEXED = Zotero.Fulltext.INDEX_STATE_INDEXED || 2;
-
-    Zotero.debug(`[GeminiChat] PDF index status for item ${itemID}: ${indexedState} (indexed=${INDEX_STATE_INDEXED})`);
-
-    // If not indexed, index it first
-    if (indexedState !== INDEX_STATE_INDEXED) {
-      Zotero.debug("[GeminiChat] PDF not indexed, triggering indexing...");
-      // @ts-ignore
-      await Zotero.Fulltext.indexItems([itemID]);
-      // Wait for indexing to complete
-      // @ts-ignore
-      await Zotero.Promise.delay(1000);
-      Zotero.debug("[GeminiChat] Waited 1000ms for indexing");
-    }
-
-    // Read the cached fulltext file
-    // @ts-ignore
-    const cacheFile = Zotero.Fulltext.getItemCacheFile(item);
-    Zotero.debug("[GeminiChat] Cache file path: " + cacheFile?.path);
-
-    if (cacheFile && await IOUtils.exists(cacheFile.path)) {
-      Zotero.debug("[GeminiChat] Cache file exists, reading...");
-      // @ts-ignore
-      const content = await Zotero.File.getContentsAsync(cacheFile.path);
-
-      if (content) {
-        const text = typeof content === 'string'
-          ? content
-          : new TextDecoder().decode(content as BufferSource);
-
-        if (text && text.trim().length > 0) {
-          Zotero.debug(`[GeminiChat] ✅ Extracted ${text.length} characters from PDF`);
-          return text.trim();
-        }
-      }
-    }
-
-    Zotero.debug("[GeminiChat] ⚠️ No text content found in PDF cache");
-    return null;
-  } catch (e) {
-    Zotero.debug("[GeminiChat] ❌ Failed to extract PDF text: " + e);
-    return null;
-  }
-}
-
-export function getBestAttachment(item: Zotero.Item): Zotero.Item | null {
-  if (item.isAttachment()) return item;
-  if (item.isRegularItem()) {
-    const attachmentIDs = item.getAttachments();
-    for (const id of attachmentIDs) {
-      const att = Zotero.Items.get(id);
-      if (att && !att.isNote() && att.attachmentContentType === 'application/pdf') {
-        return att;
-      }
-    }
-  }
-  return null;
-}
+// getBestAttachment removed — using shared getBestPdfAttachment from pdfHelpers.ts
+export const getBestAttachment = getBestPdfAttachment;
 
 /** selectItemsDialog can return IDs or wrapped items; `instanceof Zotero.Item` often fails across compartments. */
 function coercePickerSelectionToItem(idOrItem: any): Zotero.Item | null {
@@ -2009,7 +1932,7 @@ function coercePickerSelectionToItem(idOrItem: any): Zotero.Item | null {
       }
     }
   } catch (e) {
-    Zotero.debug(`[GeminiChat] coercePickerSelectionToItem: ${e}`);
+    Zotero.debug(`[ResearchCopilot] coercePickerSelectionToItem: ${e}`);
   }
   return null;
 }
@@ -2043,7 +1966,7 @@ async function loadOrBuildRagForSidebarPdf(pdfAttachment: Zotero.Item): Promise<
   try {
     return await buildRagIndexForItem(pdfAttachment);
   } catch (e) {
-    Zotero.debug(`[GeminiChat] buildRagIndexForItem sidebar: ${e}`);
+    Zotero.debug(`[ResearchCopilot] buildRagIndexForItem sidebar: ${e}`);
     return null;
   }
 }
@@ -2068,133 +1991,31 @@ async function appendFullPdfParts(
   }
 }
 
-async function getFileData(path: string): Promise<string | null> {
-  if (typeof IOUtils !== "undefined") {
-    try {
-      const bytes = await IOUtils.read(path);
-      return arrayBufferToBase64(bytes);
-    } catch (e) {
-      Zotero.debug(`[GeminiChat] IOUtils read failed: ${e}`);
-    }
-  }
+// getFileData and arrayBufferToBase64 removed — using shared imports from pdfHelpers.ts
 
-  // @ts-ignore
-  if (typeof OS !== "undefined" && OS.File) {
-    try {
-      // @ts-ignore
-      const bytes = await OS.File.read(path);
-      return arrayBufferToBase64(bytes);
-    } catch (e) {
-      Zotero.debug(`[GeminiChat] OS.File read failed: ${e}`);
-    }
-  }
 
-  return null;
-}
-
-function arrayBufferToBase64(buffer: Uint8Array | ArrayBuffer | any): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-export async function callAINonStream(
+// callAINonStream removed — using shared callAI from multiPaperChatCore.ts
+/** Adapter: wraps the shared callAI using sidebar settings format. */
+async function callAINonStreamAdapter(
   settings: ReturnType<typeof getSettings>,
   contents: any[],
   modelOverride?: string,
 ): Promise<string> {
-  const provider = getProvider(settings.provider);
-  const model = modelOverride || settings.model;
-
-  const endpoint = provider.buildEndpoint({
-    apiBase: settings.apiBase,
-    model,
-    apiKey: settings.apiKey,
-  }, false);
-
-  const payload = provider.formatRequest(contents, model);
-
-  if (settings.provider !== "gemini" && payload.stream !== undefined) {
-    payload.stream = false;
-  }
-
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (settings.provider !== "gemini") {
-    headers["Authorization"] = `Bearer ${settings.apiKey}`;
-  }
-
-  const controller = createAbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 180000);
-  const signal = controller.signal;
-
-  const res = await fetchWithAbort(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-    signal,
-  });
-  clearTimeout(timeoutId);
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status} ${res.statusText}: ${text}`);
-  }
-
-  const json: any = await res.json();
-
-  if (settings.provider === "gemini") {
-    const candidates = json?.candidates || json?.[0]?.candidates;
-    if (candidates?.[0]?.content?.parts?.[0]?.text) {
-      return candidates[0].content.parts[0].text;
-    }
-    if (Array.isArray(json)) {
-      let full = "";
-      for (const item of json) {
-        const t = item?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (t) full += t;
-      }
-      if (full) return full;
-    }
-    throw new Error("Unexpected Gemini response format");
-  } else {
-    const text = json?.choices?.[0]?.message?.content;
-    if (text) return text;
-    throw new Error("Unexpected response format");
-  }
+  const analysisSettings = getFullAnalysisSettings();
+  return callAI(analysisSettings, contents, modelOverride);
 }
 
-/** Same idea as multiPaperChatCore.rewriteQueryForSearch — helps BM25 on non-Latin queries. */
-const HAS_NON_LATIN_QUERY_RE = /[^\u0000-\u024F\u1E00-\u1EFF]/;
-
+// rewriteSidebarQueryForSearch removed — using shared rewriteQueryForSearch from multiPaperChatCore.ts
+/** Adapter: wraps shared rewriteQueryForSearch using sidebar settings format. */
 async function rewriteSidebarQueryForSearch(userQuery: string): Promise<string> {
-  const q = userQuery.trim();
-  if (!q) return userQuery;
-  if (!HAS_NON_LATIN_QUERY_RE.test(q)) return userQuery;
-
-  const settings = getSettings();
-  const pfx = config.prefsPrefix;
-  const extractionModelPref = (Zotero.Prefs.get(`${pfx}.extractionModel`, true) as string) || "__same__";
-  const extractionModel =
-    !extractionModelPref || extractionModelPref === "__same__" || extractionModelPref === "__custom__"
-      ? settings.model
-      : extractionModelPref;
-
   try {
-    const prompt =
-      `Extract English academic search keywords from the following query. Return ONLY the keywords separated by spaces, no explanation, no punctuation. If the query is about a concept, include the English term and closely related terms.\n\nQuery: ${q}`;
-    const contents = [{ role: "user" as const, parts: [{ text: prompt }] }];
-    const keywords = await callAINonStream(settings, contents, extractionModel);
-    const cleaned = keywords.trim().replace(/[,;.，；。、\n]/g, " ").replace(/\s+/g, " ");
-    if (cleaned.length > 0 && cleaned.length < 500) {
-      return `${cleaned} ${q}`;
-    }
+    ensureAnalysisGlobals();
+    const analysisSettings = getFullAnalysisSettings();
+    return await rewriteQueryForSearch(analysisSettings, userQuery);
   } catch (e) {
-    Zotero.debug(`[GeminiChat] rewriteSidebarQueryForSearch: ${e}`);
+    Zotero.debug(`[ResearchCopilot] rewriteSidebarQueryForSearch fallback: ${e}`);
+    return userQuery;
   }
-  return userQuery;
 }
 
 /**
@@ -2220,7 +2041,7 @@ async function buildReaderSidebarRagContextPartsForPdfs(
   }
 
   if (indices.length === 0) {
-    Zotero.debug("[GeminiChat] Sidebar RAG: no indices — full PDF fallback for subset");
+    Zotero.debug("[ResearchCopilot] Sidebar RAG: no indices — full PDF fallback for subset");
     const parts: any[] = [];
     for (const pdf of pdfs) {
       const title =
@@ -2250,7 +2071,7 @@ async function buildReaderSidebarRagContextPartsForPdfs(
   const results = searchChunksBalanced(searchQuery, indices, maxPerPaper, totalCap);
 
   if (results.length === 0) {
-    Zotero.debug(`[GeminiChat] Sidebar RAG: 0 hits over ${totalChunks} chunks — full PDF fallback (subset)`);
+    Zotero.debug(`[ResearchCopilot] Sidebar RAG: 0 hits over ${totalChunks} chunks — full PDF fallback (subset)`);
     const parts: any[] = [
       {
         text:
@@ -2292,7 +2113,7 @@ async function buildReaderSidebarRagContextPartsForPdfs(
   contextText += queryNote;
 
   Zotero.debug(
-    `[GeminiChat] Sidebar RAG: ${results.length} passages, ${paperCount} papers, ${indices.length} indices, ${totalChunks} chunks`,
+    `[ResearchCopilot] Sidebar RAG: ${results.length} passages, ${paperCount} papers, ${indices.length} indices, ${totalChunks} chunks`,
   );
 
   return [{ text: contextText }];
@@ -2331,7 +2152,7 @@ async function buildReaderSidebarRagContextParts(
       parts.push(...ragForOthers);
     }
     Zotero.debug(
-      `[GeminiChat] Sidebar context: first turn — full primary PDF + RAG for ${otherPdfs.length} other PDF(s)`,
+      `[ResearchCopilot] Sidebar context: first turn — full primary PDF + RAG for ${otherPdfs.length} other PDF(s)`,
     );
     return parts;
   }
@@ -2339,29 +2160,7 @@ async function buildReaderSidebarRagContextParts(
   return buildReaderSidebarRagContextPartsForPdfs(settings, userQuery, pdfs);
 }
 
-function mergeReaderStreamSignals(userSignal: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
-  const c = createAbortController();
-  const t = setTimeout(() => c.abort(), timeoutMs);
-  const onUserAbort = () => {
-    clearTimeout(t);
-    c.abort();
-  };
-  if (userSignal) {
-    if (userSignal.aborted) {
-      clearTimeout(t);
-      c.abort();
-    } else {
-      userSignal.addEventListener("abort", onUserAbort, { once: true });
-    }
-  }
-  return {
-    signal: c.signal,
-    dispose: () => {
-      clearTimeout(t);
-      if (userSignal && !userSignal.aborted) userSignal.removeEventListener("abort", onUserAbort);
-    },
-  };
-}
+// mergeReaderStreamSignals removed — using shared mergeUserAndTimeout from multiPaperChatCore.ts
 
 export async function* callAIStream(
   settings: ReturnType<typeof getSettings>,
@@ -2383,7 +2182,7 @@ export async function* callAIStream(
   const userSignal = opts?.signal;
   // Covers fetch + full body read. Do NOT dispose after fetch alone — that cleared the timer and
   // left reader.read() with no deadline, so stalled streams hung forever with no error.
-  const { signal, dispose } = mergeReaderStreamSignals(userSignal, 600000);
+  const { signal, dispose } = mergeUserAndTimeout(userSignal, 600000);
 
   // Prepare headers
   const headers: Record<string, string> = { "Content-Type": "application/json" };

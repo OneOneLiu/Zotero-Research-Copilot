@@ -28,7 +28,7 @@ class Addon {
     busy: Record<string, boolean>;
     analysisChatContexts: Record<string, ChatContext>;
     /** Reader sidebar: rolling summary cache per item session key. */
-    compactionCache: Record<string, { summary: string; sourceHash: string }>;
+    compactionCache: Record<string, { summary: string; sourceHash: string; olderCount?: number }>;
   };
 
   constructor() {

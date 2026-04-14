@@ -87,19 +87,23 @@ class GeminiProvider implements AIProvider {
 }
 
 /**
- * DeepSeek Provider Implementation
- * Uses OpenAI-compatible API
+ * OpenAI-Compatible Provider Implementation
+ * Used by DeepSeek, Doubao, and any other provider that follows the OpenAI API spec.
  */
-class DeepSeekProvider implements AIProvider {
-    name = "deepseek";
-    displayName = "DeepSeek";
+class OpenAICompatibleProvider implements AIProvider {
+    name: string;
+    displayName: string;
+
+    constructor(name: string, displayName: string) {
+        this.name = name;
+        this.displayName = displayName;
+    }
 
     buildEndpoint(settings: ProviderSettings, stream: boolean): string {
         return `${settings.apiBase}/chat/completions`;
     }
 
     formatRequest(contents: ChatContent[], model: string): any {
-        // DeepSeek uses OpenAI-compatible format
         const messages = contents.map((content) => {
             const role = content.role === "model" ? "assistant" : content.role;
             const textParts = content.parts.filter((p) => p.text).map((p) => p.text);
@@ -115,57 +119,6 @@ class DeepSeekProvider implements AIProvider {
     }
 
     parseStreamChunk(jsonObj: any): StreamChunk | null {
-        // DeepSeek uses same format as OpenAI
-        const delta = jsonObj?.choices?.[0]?.delta;
-        if (delta?.content) {
-            return { type: "text", text: delta.content };
-        }
-
-        if (jsonObj?.usage) {
-            return {
-                type: "usage",
-                usage: {
-                    promptTokens: jsonObj.usage.prompt_tokens,
-                    completionTokens: jsonObj.usage.completion_tokens,
-                    totalTokens: jsonObj.usage.total_tokens,
-                },
-            };
-        }
-
-        return null;
-    }
-}
-
-/**
- * Doubao Provider Implementation
- * Uses OpenAI-compatible API
- */
-class DoubaoProvider implements AIProvider {
-    name = "doubao";
-    displayName = "豆包 AI";
-
-    buildEndpoint(settings: ProviderSettings, stream: boolean): string {
-        return `${settings.apiBase}/chat/completions`;
-    }
-
-    formatRequest(contents: ChatContent[], model: string): any {
-        // Doubao uses OpenAI-compatible format
-        const messages = contents.map((content) => {
-            const role = content.role === "model" ? "assistant" : content.role;
-            const textParts = content.parts.filter((p) => p.text).map((p) => p.text);
-            const contentText = textParts.join("\n");
-            return { role, content: contentText };
-        });
-
-        return {
-            model,
-            messages,
-            stream: true,
-        };
-    }
-
-    parseStreamChunk(jsonObj: any): StreamChunk | null {
-        // Doubao uses same format as OpenAI
         const delta = jsonObj?.choices?.[0]?.delta;
         if (delta?.content) {
             return { type: "text", text: delta.content };
@@ -189,8 +142,8 @@ class DoubaoProvider implements AIProvider {
 // Provider registry
 const providers: Record<string, AIProvider> = {
     gemini: new GeminiProvider(),
-    deepseek: new DeepSeekProvider(),
-    doubao: new DoubaoProvider(),
+    deepseek: new OpenAICompatibleProvider("deepseek", "DeepSeek"),
+    doubao: new OpenAICompatibleProvider("doubao", "豆包 AI"),
 };
 
 /**

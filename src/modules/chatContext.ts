@@ -23,7 +23,7 @@ export interface ChatContext {
   standaloneCollectionInfo: { id?: number; name?: string };
   sessionCreatedAt: string;
   /** Rolling summary cache for context compaction (analysis session). */
-  compactionCache?: { summary: string; sourceHash: string };
+  compactionCache?: { summary: string; sourceHash: string; olderCount?: number };
 }
 
 export function createEmptyChatContext(): ChatContext {

@@ -5,6 +5,12 @@ import tm from "markdown-it-texmath";
 import katex from "katex";
 import { config } from "../../package.json";
 import {
+  getBestPdfAttachment as _getBestPdfAttachment,
+  getPdfText as _getPdfText,
+  getPdfBase64 as _getPdfBase64,
+  escapeHtml,
+} from "../utils/pdfHelpers";
+import {
   type RagIndex,
   buildRagIndexFromText,
   loadRagIndex,
@@ -198,49 +204,10 @@ export function getFullAnalysisSettings() {
 
 // ---------- PDF helpers ----------
 
-function getBestPdfAttachment(item: any): any {
-  if (item.isAttachment?.() && item.attachmentContentType === "application/pdf") return item;
-  if (item.isRegularItem?.()) {
-    for (const id of item.getAttachments()) {
-      const att = Zotero.Items.get(id);
-      if (att && !att.isNote() && att.attachmentContentType === "application/pdf") return att;
-    }
-  }
-  return null;
-}
-
-async function getPdfBase64(item: any): Promise<{ mimeType: string; data: string } | null> {
-  const att = item.isAttachment?.() ? item : getBestPdfAttachment(item);
-  if (!att) return null;
-  const path = await att.getFilePathAsync();
-  if (!path) return null;
-  try {
-    const bytes = await IOUtils.read(path);
-    const u8 = new Uint8Array(bytes);
-    let bin = "";
-    for (let i = 0; i < u8.byteLength; i++) {
-      bin += String.fromCharCode(u8[i]);
-    }
-    return { mimeType: "application/pdf", data: btoa(bin) };
-  } catch (_e) { return null; }
-}
-
-async function getPdfText(item: any): Promise<string | null> {
-  try {
-    const state = await Zotero.Fulltext.getIndexedState(item);
-    if (state !== (Zotero.Fulltext.INDEX_STATE_INDEXED || 2)) {
-      await Zotero.Fulltext.indexItems([item.id]);
-      await Zotero.Promise.delay(1000);
-    }
-    const cf = Zotero.Fulltext.getItemCacheFile(item);
-    if (cf && await IOUtils.exists(cf.path)) {
-      const c = await Zotero.File.getContentsAsync(cf.path);
-      const t = typeof c === "string" ? c : new TextDecoder().decode(c);
-      if (t?.trim()) return t.trim();
-    }
-    return null;
-  } catch (_e) { return null; }
-}
+// PDF helpers — delegated to shared pdfHelpers.ts
+const getBestPdfAttachment = _getBestPdfAttachment;
+const getPdfBase64 = _getPdfBase64;
+const getPdfText = _getPdfText;
 
 // ---------- RAG helpers ----------
 
@@ -330,7 +297,7 @@ function shouldRetryCallAiResponseError(e: unknown): boolean {
 }
 
 /** Combines optional user cancel with per-request timeout; dispose() clears timers/listeners. */
-function mergeUserAndTimeout(user: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
+export function mergeUserAndTimeout(user: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; dispose: () => void } {
   const c = createAbortController();
   const t = setTimeout(() => c.abort(), timeoutMs);
   const onUserAbort = () => {
@@ -396,7 +363,7 @@ async function fetchWithRetry(url: string, opts: RequestInit, retries = MAX_RETR
   throw new Error("Max retries exceeded");
 }
 
-async function callAI(
+export async function callAI(
   s: ReturnType<typeof getFullAnalysisSettings>,
   contents: any[],
   modelOverride?: string,
@@ -461,7 +428,7 @@ async function callAI(
   throw lastErr;
 }
 
-async function* callAIStream(
+export async function* callAIStream(
   s: ReturnType<typeof getFullAnalysisSettings>,
   contents: any[],
   modelOverride?: string,
@@ -511,7 +478,7 @@ async function* callAIStream(
 
 const HAS_NON_LATIN_RE = /[^\u0000-\u024F\u1E00-\u1EFF]/;
 
-async function rewriteQueryForSearch(settings: ReturnType<typeof getFullAnalysisSettings>, userQuery: string): Promise<string> {
+export async function rewriteQueryForSearch(settings: ReturnType<typeof getFullAnalysisSettings>, userQuery: string): Promise<string> {
   // If query is purely Latin-based, use it directly
   if (!HAS_NON_LATIN_RE.test(userQuery)) return userQuery;
 
@@ -1078,7 +1045,28 @@ function normalizeInlineMathWhitespace(src: string): string {
     .replace(/(\\[a-zA-Z]+(?:\{[^}]*\})*)\s+\$/g, "$1$");
 }
 
+/**
+ * AI models often break code fence syntax:
+ * 1. Closing ``` immediately followed by text: ```关键区别 → needs newline
+ * 2. Text immediately before ``` on same line: 文字``` → needs newline
+ * CommonMark requires fences on their own line (up to 3 spaces indent).
+ */
+function normalizeCodeFences(src: string): string {
+  // Fix closing fences followed by non-language-tag text on the same line
+  // e.g. "```关键区别" → "```\n关键区别"
+  // Don't break opening fences: ```python, ```js, ```text, etc.
+  src = src.replace(/^(`{3,})(?=[^\s\n`a-zA-Z0-9\-_])/gm, '$1\n');
+
+  // Fix text immediately before ``` at line boundaries
+  // e.g. "结束```" → "结束\n```"
+  // Only when preceded by non-whitespace and the ``` is at least 3 backticks
+  src = src.replace(/([^\n\s`])(`{3,})\s*$/gm, '$1\n$2');
+
+  return src;
+}
+
 function normalizeMathDelimiters(src: string): string {
+  src = normalizeCodeFences(src);
   src = normalizeMarkdownBoldMarkers(src);
   src = normalizeAtxHeadingSpace(src);
   src = normalizeMarkdownBulletMarkers(src);
@@ -1221,7 +1209,7 @@ function renderMdForNote(text: string): string {
   try { return getMarkdownForNote().render(normalizeMathDelimiters(text)); } catch (_) { return esc(text); }
 }
 
-export function esc(t: string) { return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+export const esc = escapeHtml;
 
 // ---------- First-message: full analysis pipeline ----------
 
@@ -2283,48 +2271,180 @@ async function runToolCallLoop(
   onToolCall?: (tc: ToolCall) => void,
   onToolResult?: (tc: ToolCall, result: string) => void,
   userSignal?: AbortSignal,
+  onTextChunk?: (chunk: string) => void,
 ): Promise<{ text: string; hitLimit: boolean }> {
   const rounds: { calls: ToolCall[]; results: string[] }[] = [];
   const maxRounds = settings.maxToolRounds;
 
-  for (let r = 0; r < maxRounds; r++) {
+  for (let r = 0; r <= maxRounds; r++) {
     if (userSignal?.aborted) throw new DOMException("Aborted", "AbortError");
     const payload = buildPayloadWithTools(settings, chatMsgs, userParts, rounds, tools);
-    const res = await fetchWithRetry(
-      buildEndpoint(settings, false),
-      { method: "POST", headers: buildHeaders(settings), body: JSON.stringify(payload) },
-      MAX_RETRIES,
-      userSignal,
-    );
-    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-    const parsed = parseToolResponse(settings, await res.json());
 
-    if (parsed.type === "text") return { text: cleanToolLeakage(parsed.text), hitLimit: false };
+    // Use streaming to enable progressive text rendering for the final response
+    const streamResult = await streamingToolRound(settings, payload, userSignal, onTextChunk);
 
+    if (streamResult.type === "text") {
+      return { text: cleanToolLeakage(streamResult.text), hitLimit: r >= maxRounds };
+    }
+
+    // Tool calls: execute them
     const results: string[] = [];
-    for (const tc of parsed.toolCalls) {
+    for (const tc of streamResult.toolCalls) {
       if (userSignal?.aborted) throw new DOMException("Aborted", "AbortError");
       if (onToolCall) onToolCall(tc);
       const result = await executeTool(tc.name, tc.args, settings);
       results.push(result);
       if (onToolResult) onToolResult(tc, result);
     }
-    rounds.push({ calls: parsed.toolCalls, results });
+    rounds.push({ calls: streamResult.toolCalls, results });
   }
 
-  if (userSignal?.aborted) throw new DOMException("Aborted", "AbortError");
-  const payload = buildPayloadWithTools(settings, chatMsgs, userParts, rounds, tools);
+  return { text: "", hitLimit: true };
+}
+
+/**
+ * Execute a single round of the tool call loop using streaming.
+ * Detects whether the AI returns text or tool calls from the first chunk.
+ * For text: yields chunks via callback for immediate UI rendering.
+ * For tool calls: accumulates silently and returns structured data.
+ */
+async function streamingToolRound(
+  settings: ReturnType<typeof getFullAnalysisSettings>,
+  payload: any,
+  userSignal?: AbortSignal,
+  onTextChunk?: (chunk: string) => void,
+): Promise<
+  | { type: "text"; text: string }
+  | { type: "tool_calls"; toolCalls: ToolCall[] }
+> {
+  // Enable streaming in payload
+  const streamPayload = { ...payload };
+  if (settings.provider !== "gemini") {
+    streamPayload.stream = true;
+  }
+
+  const url = buildEndpoint(settings, true);
   const res = await fetchWithRetry(
-    buildEndpoint(settings, false),
-    { method: "POST", headers: buildHeaders(settings), body: JSON.stringify(payload) },
+    url,
+    { method: "POST", headers: buildHeaders(settings), body: JSON.stringify(streamPayload) },
     MAX_RETRIES,
     userSignal,
   );
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-  const json: any = await res.json();
-  const parsed = parseToolResponse(settings, json);
-  const raw = parsed.type === "text" ? parsed.text : "";
-  return { text: cleanToolLeakage(raw), hitLimit: true };
+  if (!res.body) throw new Error("No body");
+
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let fullText = "";
+  let isToolCall = false;
+
+  // For Gemini: tool calls come as complete parts
+  let geminiToolCalls: ToolCall[] = [];
+
+  // For OpenAI: tool calls are streamed as deltas that need accumulation
+  const accumulatedToolCalls: Record<number, { id: string; name: string; args: string }> = {};
+
+  try {
+    while (true) {
+      if (userSignal?.aborted) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        throw new DOMException("Aborted", "AbortError");
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+
+      // Parse JSON objects from buffer (same bracket-matching as callAIStream)
+      let si = 0;
+      while (si < buf.length) {
+        const st = buf.indexOf("{", si);
+        if (st === -1) break;
+        let d = 0, e = -1, ins = false, esc2 = false;
+        for (let i = st; i < buf.length; i++) {
+          const ch = buf[i];
+          if (esc2) { esc2 = false; continue; }
+          if (ch === "\\") { esc2 = true; continue; }
+          if (ch === '"') { ins = !ins; continue; }
+          if (!ins) {
+            if (ch === "{") d++;
+            if (ch === "}") { d--; if (d === 0) { e = i; break; } }
+          }
+        }
+        if (e !== -1) {
+          try {
+            const p = JSON.parse(buf.substring(st, e + 1));
+
+            if (settings.provider === "gemini") {
+              const parts = p?.candidates?.[0]?.content?.parts || [];
+              const fCalls = parts.filter((part: any) => part.functionCall);
+              if (fCalls.length > 0) {
+                isToolCall = true;
+                geminiToolCalls = fCalls.map((fc: any, i: number) => ({
+                  name: fc.functionCall.name,
+                  args: fc.functionCall.args || {},
+                  id: `gc_${Date.now()}_${i}`,
+                }));
+              } else {
+                const t = parts.filter((part: any) => part.text).map((part: any) => part.text).join("");
+                if (t && !isToolCall) {
+                  fullText += t;
+                  if (onTextChunk) onTextChunk(t);
+                }
+              }
+            } else {
+              // OpenAI-compatible: accumulate tool call deltas or text content
+              const delta = p?.choices?.[0]?.delta;
+              const finishReason = p?.choices?.[0]?.finish_reason;
+
+              if (delta?.tool_calls) {
+                isToolCall = true;
+                for (const tc of delta.tool_calls) {
+                  const idx = tc.index ?? 0;
+                  if (!accumulatedToolCalls[idx]) {
+                    accumulatedToolCalls[idx] = { id: tc.id || "", name: "", args: "" };
+                  }
+                  if (tc.id) accumulatedToolCalls[idx].id = tc.id;
+                  if (tc.function?.name) accumulatedToolCalls[idx].name += tc.function.name;
+                  if (tc.function?.arguments) accumulatedToolCalls[idx].args += tc.function.arguments;
+                }
+              } else if (delta?.content && !isToolCall) {
+                fullText += delta.content;
+                if (onTextChunk) onTextChunk(delta.content);
+              }
+
+              if (finishReason === "tool_calls" || finishReason === "function_call") {
+                isToolCall = true;
+              }
+            }
+          } catch (_) { /* skip parse error */ }
+          buf = buf.substring(e + 1);
+          si = 0;
+        } else {
+          si = st + 1;
+          break;
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (isToolCall) {
+    let toolCalls: ToolCall[];
+    if (settings.provider === "gemini") {
+      toolCalls = geminiToolCalls;
+    } else {
+      toolCalls = Object.values(accumulatedToolCalls).map(tc => ({
+        name: tc.name,
+        args: (() => { try { return JSON.parse(tc.args || "{}"); } catch { return {}; } })(),
+        id: tc.id || `oc_${Date.now()}`,
+      }));
+    }
+    return { type: "tool_calls", toolCalls };
+  }
+
+  return { type: "text", text: fullText };
 }
 
 function cleanToolLeakage(text: string): string {
@@ -2353,8 +2473,8 @@ async function compactHistoryForAnalysisFollowUp(
       maxPromptTokens: settings.contextMaxPromptTokens,
       extraPromptTokens,
       getCache: () => C.compactionCache,
-      setCache: (summary, sourceHash) => {
-        C.compactionCache = { summary, sourceHash };
+      setCache: (summary, sourceHash, olderCount) => {
+        C.compactionCache = { summary, sourceHash, olderCount };
       },
       summarizeConversation: async (transcript) => {
         const contents = [{ role: "user" as const, parts: [{ text: transcript }] }];
@@ -2471,6 +2591,12 @@ export async function handleFollowUp(
     setChatInnerHTML(toolBubble, html);
   }
 
+  // Create model bubble early — streaming text will render progressively into it
+  const modelBubble = addMessageBubble("model", "");
+  const streamEl = resolveStreamPaintTarget(modelBubble);
+  let streamedText = "";
+  let lastStreamPaint = 0;
+
   let finalText: string;
   let hitLimit = false;
   try {
@@ -2525,12 +2651,22 @@ export async function handleFollowUp(
         renderToolBubble();
       },
       signal,
+      // onTextChunk: stream final response progressively into model bubble
+      (chunk) => {
+        streamedText += chunk;
+        const now = Date.now();
+        if (now - lastStreamPaint >= STREAMING_MD_UI_MS) {
+          lastStreamPaint = now;
+          setChatInnerHTML(streamEl, renderMd(streamedText));
+        }
+      },
     );
     finalText = result.text;
     hitLimit = result.hitLimit;
   } catch (e: any) {
     if (e?.name === "AbortError") {
       toolBubble.remove();
+      if (!streamedText) modelBubble.remove();
       throw e;
     }
     if (toolCount > 0) {
@@ -2539,6 +2675,7 @@ export async function handleFollowUp(
     } else {
       toolBubble.remove();
     }
+    if (!streamedText) modelBubble.remove();
     throw e;
   }
 
@@ -2553,7 +2690,9 @@ export async function handleFollowUp(
     toolBubble.remove();
   }
 
-  const modelBubble = addMessageBubble("model", renderMd(finalText), finalText);
+  // Final render with complete text
+  setChatInnerHTML(streamEl, renderMd(finalText));
+  setModelBubbleMarkdownSource(modelBubble, finalText);
 
   C.chatHistory.push({ role: "user", text: userPrompt });
   C.chatHistory.push({ role: "model", text: finalText });
@@ -2613,14 +2752,14 @@ function enqueueCurrentInput(): boolean {
   const input = $("chat-input") as HTMLTextAreaElement;
   const text = input.value.trim();
   if (!text) return false;
+  let settings: ReturnType<typeof getFullAnalysisSettings>;
   try {
     ensureGlobals();
-    getFullAnalysisSettings();
+    settings = getFullAnalysisSettings();
   } catch (e: any) {
     addMessageBubble("system", `⚠️ ${esc(e?.message || String(e))}`);
     return false;
   }
-  const settings = getFullAnalysisSettings();
   if (!settings.apiKey) {
     addMessageBubble("system", "⚠️ Missing API key. Configure in Edit → Settings → Research Copilot.");
     return false;
@@ -2677,14 +2816,14 @@ async function handleSendNormal() {
   const text = input.value.trim();
   if (!text) return;
 
+  let settings: ReturnType<typeof getFullAnalysisSettings>;
   try {
     ensureGlobals();
-    getFullAnalysisSettings();
+    settings = getFullAnalysisSettings();
   } catch (e: any) {
     addMessageBubble("system", `⚠️ ${esc(e?.message || String(e))}`);
     return;
   }
-  const settings = getFullAnalysisSettings();
   if (!settings.apiKey) {
     addMessageBubble("system", "⚠️ Missing API key. Configure in Edit → Settings → Research Copilot.");
     return;

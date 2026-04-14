@@ -266,7 +266,7 @@ export async function buildRagIndexForItem(item: any): Promise<RagIndex | null> 
   if (!att) return null;
 
   const state = await Zotero.Fulltext.getIndexedState(att);
-  if (state !== (Zotero.Fulltext.INDEX_STATE_INDEXED || 2)) {
+  if (state !== (Zotero.Fulltext.INDEX_STATE_INDEXED ?? 2)) {
     await Zotero.Fulltext.indexItems([att.id]);
     await Zotero.Promise.delay(1500);
   }

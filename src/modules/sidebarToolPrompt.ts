@@ -16,6 +16,7 @@ const ALL_TOOL_NAMES = [
   "get_item_collections", "get_related_items", "get_item_details",
   "get_collection_tag_stats", "get_collection_stats", "get_recent_items",
   "remove_paper", "add_paper_to_analysis", "rebuild_paper_rag",
+  "add_tag", "remove_tag",
 ] as const;
 
 export function getEnabledToolNamesForSidebar(): Set<string> {
@@ -88,6 +89,8 @@ export function buildSidebarToolContextPrompt(paperTitles: string[]): string {
   if (enabled.has("remove_paper")) mgmtTools.push("remove_paper(paper_index) — remove paper from analysis session");
   if (enabled.has("add_paper_to_analysis")) mgmtTools.push("add_paper_to_analysis(item_id) — add Zotero item by ID, builds RAG");
   if (enabled.has("rebuild_paper_rag")) mgmtTools.push("rebuild_paper_rag(paper_index) — rebuild search index");
+  if (enabled.has("add_tag")) mgmtTools.push("add_tag(tag, paper_index? | item_id?) — add a tag to a paper or any item");
+  if (enabled.has("remove_tag")) mgmtTools.push("remove_tag(tag, paper_index? | item_id?) — remove a tag from a paper or any item");
 
   if (analysisTools.length) ctx += "**Paper tools:**\n" + analysisTools.map((t) => `- ${t}`).join("\n") + "\n";
   if (libraryTools.length) ctx += "**Library tools:**\n" + libraryTools.map((t) => `- ${t}`).join("\n") + "\n";

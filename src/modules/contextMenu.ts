@@ -1,6 +1,7 @@
 import { config } from "../../package.json";
 import Addon from "../addon";
 import { buildRagIndexForItem, hasRagIndex } from "./ragIndex";
+import { getBestPdfAttachment } from "../utils/pdfHelpers";
 
 const MENU_ID = "gemini-chat-multi-paper-analysis";
 const RAG_MENU_ID = "gemini-chat-build-rag-index";
@@ -11,21 +12,7 @@ function menuItemIconChrome(addonRef: string): string {
   return `chrome://${addonRef}/content/icons/favicon.png`;
 }
 
-function findPdfAttachment(item: Zotero.Item): Zotero.Item | null {
-  if (item.isAttachment() && item.attachmentContentType === "application/pdf") {
-    return item;
-  }
-  if (item.isRegularItem()) {
-    const attachmentIDs = item.getAttachments();
-    for (const id of attachmentIDs) {
-      const att = Zotero.Items.get(id);
-      if (att && !att.isNote() && att.attachmentContentType === "application/pdf") {
-        return att;
-      }
-    }
-  }
-  return null;
-}
+// findPdfAttachment removed — using shared getBestPdfAttachment from pdfHelpers.ts
 
 export function registerContextMenu(win: Window, addon: Addon) {
   const doc = win.document;
@@ -33,7 +20,7 @@ export function registerContextMenu(win: Window, addon: Addon) {
 
   const menu = doc.getElementById("zotero-itemmenu");
   if (!menu) {
-    Zotero.debug("[GeminiChat] zotero-itemmenu not found, skipping context menu.");
+    Zotero.debug("[ResearchCopilot] zotero-itemmenu not found, skipping context menu.");
     return;
   }
 
@@ -62,7 +49,7 @@ export function registerContextMenu(win: Window, addon: Addon) {
 
       const papers: { id: number; title: string }[] = [];
       for (const item of selectedItems) {
-        const pdf = findPdfAttachment(item);
+        const pdf = getBestPdfAttachment(item);
         if (pdf) {
           const title = item.getField("title") ||
             pdf.parentItem?.getField("title") ||
@@ -96,7 +83,7 @@ export function registerContextMenu(win: Window, addon: Addon) {
       );
 
     } catch (e) {
-      Zotero.debug(`[GeminiChat] Context menu handler error: ${e}`);
+      Zotero.debug(`[ResearchCopilot] Context menu handler error: ${e}`);
     }
   });
 
@@ -122,7 +109,7 @@ export function registerContextMenu(win: Window, addon: Addon) {
 
         const items: Zotero.Item[] = [];
         for (const item of selectedItems) {
-          const pdf = findPdfAttachment(item);
+          const pdf = getBestPdfAttachment(item);
           if (pdf) items.push(item);
         }
 
@@ -148,7 +135,7 @@ export function registerContextMenu(win: Window, addon: Addon) {
             }
           } catch (e: any) {
             failed++;
-            Zotero.debug(`[GeminiChat] RAG index build failed for ${title}: ${e}`);
+            Zotero.debug(`[ResearchCopilot] RAG index build failed for ${title}: ${e}`);
           }
         }
 
@@ -162,7 +149,7 @@ export function registerContextMenu(win: Window, addon: Addon) {
         (win as any).alert(msg);
 
       } catch (e) {
-        Zotero.debug(`[GeminiChat] RAG build handler error: ${e}`);
+        Zotero.debug(`[ResearchCopilot] RAG build handler error: ${e}`);
       }
     });
 
@@ -193,7 +180,7 @@ export function registerContextMenu(win: Window, addon: Addon) {
           dataStr,
         );
       } catch (e) {
-        Zotero.debug(`[GeminiChat] Resume analysis error: ${e}`);
+        Zotero.debug(`[ResearchCopilot] Resume analysis error: ${e}`);
       }
     });
 
@@ -250,14 +237,14 @@ export function registerContextMenu(win: Window, addon: Addon) {
           dataStr,
         );
       } catch (e) {
-        Zotero.debug(`[GeminiChat] Standalone assistant error: ${e}`);
+        Zotero.debug(`[ResearchCopilot] Standalone assistant error: ${e}`);
       }
     });
 
     toolsMenu.appendChild(standaloneItem);
   }
 
-  Zotero.debug("[GeminiChat] Context menu items registered.");
+  Zotero.debug("[ResearchCopilot] Context menu items registered.");
 }
 
 export function unregisterContextMenu(win: Window) {

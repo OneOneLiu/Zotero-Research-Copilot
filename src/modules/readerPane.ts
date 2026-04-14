@@ -58,6 +58,21 @@ let md: any = null;
 let mermaidInitialized = false;
 let mermaidLib: any = null;
 
+/**
+ * Zotero's ItemPaneManager may re-render a section at any time (sidebar scroll,
+ * layout change, item metadata update, etc.).  When that happens `renderChat` is
+ * called with a *new* `body` element and all previously-created DOM references
+ * become detached.  An in-flight streaming loop that still closes over the *old*
+ * `renderMessages` / `setBusy` would keep writing to invisible nodes.
+ *
+ * This map always holds the **latest** closures for each session key so that the
+ * streaming loop can pick them up after a re-render.
+ */
+const _livePane = new Map<string, {
+  renderMessages: (forceScroll?: boolean) => void;
+  setBusy: (busy: boolean) => void;
+}>();
+
 // escapeHtml removed — using shared import from pdfHelpers.ts
 
 function encodeMermaidSource(text: string) {
@@ -1354,6 +1369,8 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
     // Initial sync
     setBusy(addon.isBusy(itemKey));
 
+    _livePane.set(itemKey, { renderMessages, setBusy });
+
     const renderChips = () => {
       contextChips.innerHTML = "";
       const items = addon.getContextItems(itemKey);
@@ -1671,13 +1688,12 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
             accumulatedText += chunk;
             modelMsg.text = accumulatedText;
           } else if (typeof chunk === "object" && chunk.usage) {
-            // The provider already returns normalized usage data
             modelMsg.usage = chunk.usage;
           }
           const now = Date.now();
           if (now - lastSidebarRender >= SIDEBAR_RENDER_MS) {
             lastSidebarRender = now;
-            renderMessages();
+            (_livePane.get(itemKey)?.renderMessages ?? renderMessages)(true);
           }
         }
 
@@ -1708,8 +1724,9 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
           });
         }
       } finally {
-        setBusy(false);
-        renderMessages();
+        const live = _livePane.get(itemKey);
+        (live?.setBusy ?? setBusy)(false);
+        (live?.renderMessages ?? renderMessages)(true);
 
         // Auto-save chat history
         try {

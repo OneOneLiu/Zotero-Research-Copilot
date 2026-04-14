@@ -86,6 +86,82 @@ function initTabs() {
   });
 }
 
+/**
+ * Replaces a native `<select>` with a pure-DOM custom dropdown.
+ *
+ * Native `<select>` popups can fail inside iframes embedded in Zotero's XUL
+ * preferences window on certain OS / display-scaling configurations.  This
+ * component renders entirely within the document, so it works everywhere.
+ *
+ * The original `<select>` is kept hidden as the data model — its `.value` and
+ * `change` events still work normally.  Call `refresh()` after programmatically
+ * changing options or value.
+ */
+interface RCSelectHandle {
+  refresh: () => void;
+  wrapper: HTMLElement;
+}
+
+function enhanceSelect(select: HTMLSelectElement): RCSelectHandle {
+  const wrapper = document.createElement("div");
+  wrapper.className = "rc-select";
+
+  const trigger = document.createElement("div");
+  trigger.className = "rc-select-trigger";
+  trigger.tabIndex = 0;
+
+  const panel = document.createElement("div");
+  panel.className = "rc-select-panel";
+
+  wrapper.appendChild(trigger);
+  wrapper.appendChild(panel);
+
+  select.parentElement!.insertBefore(wrapper, select.nextSibling);
+  select.style.setProperty("display", "none", "important");
+
+  const refresh = () => {
+    panel.innerHTML = "";
+    const currentVal = select.value;
+    let found = false;
+    (Array.from(select.options) as HTMLOptionElement[]).forEach(opt => {
+      const item = document.createElement("div");
+      item.className = "rc-select-option";
+      if (opt.value === currentVal) {
+        item.classList.add("selected");
+        trigger.textContent = opt.textContent || opt.value;
+        found = true;
+      }
+      item.textContent = opt.textContent || opt.value;
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        select.value = opt.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        wrapper.classList.remove("open");
+        refresh();
+      });
+      panel.appendChild(item);
+    });
+    if (!found) {
+      const selOpt = select.options[select.selectedIndex];
+      trigger.textContent = selOpt ? (selOpt.textContent || selOpt.value) : "";
+    }
+  };
+
+  trigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.querySelectorAll(".rc-select.open").forEach(el => {
+      if (el !== wrapper) el.classList.remove("open");
+    });
+    wrapper.classList.toggle("open");
+  });
+
+  document.addEventListener("click", () => wrapper.classList.remove("open"));
+
+  refresh();
+
+  return { refresh, wrapper };
+}
+
 function initForm(Zotero: any) {
   const save = (id: string, value: string) => {
     Zotero.Prefs.set(getPrefKey(id), value, true);
@@ -110,7 +186,11 @@ function initForm(Zotero: any) {
     opt.textContent = p.name;
     providerSelect.appendChild(opt);
   });
-  providerSelect.value = load("provider", "gemini");
+  providerSelect.value = load("provider", "deepseek");
+
+  // Replace native <select> with custom dropdowns for cross-platform reliability
+  const providerDD = enhanceSelect(providerSelect);
+  const modelDD = enhanceSelect(modelSelect);
 
   const getModelsForProvider = (provider: string): string[] => {
     if (provider === "gemini") return GEMINI_MODELS;
@@ -121,7 +201,7 @@ function initForm(Zotero: any) {
 
   const getDefaultModel = (provider: string): string => {
     if (provider === "gemini") return "gemini-1.5-flash-latest";
-    if (provider === "deepseek") return "deepseek-chat";
+    if (provider === "deepseek") return "deepseek-reasoner";
     if (provider === "doubao") return "doubao-seed-1-6-flash-250615";
     return "";
   };
@@ -165,15 +245,12 @@ function initForm(Zotero: any) {
     if (saved && !allVals.includes(saved) && saved !== "__custom__") {
       select.value = "__custom__";
       input.value = saved;
-      select.style.display = "block";
       input.style.display = "block";
     } else if (saved === "__custom__") {
       select.value = "__custom__";
-      select.style.display = "block";
       input.style.display = "block";
     } else {
       select.value = saved;
-      select.style.display = "block";
       input.style.display = "none";
       if (!isInitialLoad) {
         const def = addSame ? "__same__" : getDefaultModel(provider);
@@ -200,6 +277,7 @@ function initForm(Zotero: any) {
   // ---- Extraction model ----
   const extractModelSelect = $input("extraction-model-select") as HTMLSelectElement;
   const extractModelInput = $input("extraction-model-input") as HTMLInputElement;
+  const extractDD = enhanceSelect(extractModelSelect);
 
   const updateProviderUI = (isInitialLoad = false) => {
     const provider = providerSelect.value;
@@ -216,10 +294,13 @@ function initForm(Zotero: any) {
     }
 
     setupModelPair(modelSelect, modelInput, "model", provider, isInitialLoad);
+    modelDD.refresh();
     setupModelPair(extractModelSelect, extractModelInput, "extractionModel", provider, isInitialLoad, true);
+    extractDD.refresh();
   };
 
   updateProviderUI(true);
+  providerDD.refresh();
 
   wireModelPair(modelSelect, modelInput, "model");
   wireModelPair(extractModelSelect, extractModelInput, "extractionModel");
@@ -283,12 +364,15 @@ function initForm(Zotero: any) {
   // ---- Concurrency ----
   const concurrency = $input("concurrency") as HTMLSelectElement;
   concurrency.value = load("concurrency", "4");
+  enhanceSelect(concurrency);
 
   // ---- RAG Settings ----
   const ragPerPaper = $input("rag-per-paper") as HTMLSelectElement;
   const ragChunks = $input("rag-chunks") as HTMLSelectElement;
   ragPerPaper.value = load("ragMaxChunksPerPaper", "3");
   ragChunks.value = load("ragChunksPerQuery", "30");
+  enhanceSelect(ragPerPaper);
+  enhanceSelect(ragChunks);
   ragPerPaper.addEventListener("change", () => save("ragMaxChunksPerPaper", ragPerPaper.value));
   ragChunks.addEventListener("change", () => save("ragChunksPerQuery", ragChunks.value));
   concurrency.addEventListener("change", () => save("concurrency", concurrency.value));

@@ -7,16 +7,16 @@ function getPrefKey(key: string) {
 
 const DEFAULT_MODELS: Record<string, string> = {
   gemini: "gemini-1.5-flash-latest",
-  deepseek: "deepseek-chat",
+  deepseek: "deepseek-reasoner",
   doubao: "doubao-seed-1-6-flash-250615",
 };
 
 export function getSettings() {
-  const provider = (Zotero.Prefs.get(getPrefKey("provider"), true) as string) || "gemini";
+  const provider = (Zotero.Prefs.get(getPrefKey("provider"), true) as string) || "deepseek";
 
   // Get default API base for the selected provider
   const providerConfig = PROVIDERS.find(p => p.id === provider);
-  const defaultApiBase = providerConfig?.defaultApiBase || "https://generativelanguage.googleapis.com/v1beta";
+  const defaultApiBase = providerConfig?.defaultApiBase || "https://api.deepseek.com";
 
   return {
     provider,
@@ -25,7 +25,7 @@ export function getSettings() {
       defaultApiBase,
     model:
       (Zotero.Prefs.get(getPrefKey("model"), true) as string) ||
-      DEFAULT_MODELS[provider] || "gemini-1.5-flash-latest",
+      DEFAULT_MODELS[provider] || "deepseek-reasoner",
     apiKey: (Zotero.Prefs.get(getPrefKey("apiKey"), true) as string) || "",
     customPrompts: (Zotero.Prefs.get(getPrefKey("customPrompts"), true) as string) || "[]",
     chatHeight: parseInt((Zotero.Prefs.get(getPrefKey("chatHeight"), true) as string) || "500", 10),

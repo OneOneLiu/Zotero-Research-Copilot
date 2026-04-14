@@ -422,6 +422,64 @@
       color: #0969da;
       font-weight: 500;
     }
+
+    /* ---- Custom dropdown (replaces native <select> for cross-platform reliability in iframe) ---- */
+    .rc-select { position: relative; }
+    .rc-select-trigger {
+      padding: 6px 28px 6px 8px;
+      border: 1px solid #c4c4c4;
+      border-radius: 4px;
+      font-size: 13px;
+      background: #fff;
+      color: #333;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .rc-select-trigger::after {
+      content: '\25BE';
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #999;
+      font-size: 11px;
+      pointer-events: none;
+    }
+    .rc-select-trigger:hover { border-color: #999; }
+    .rc-select.open .rc-select-trigger {
+      border-color: #007AFF;
+      box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.12);
+    }
+    .rc-select-panel {
+      display: none;
+      position: absolute;
+      top: calc(100% + 2px);
+      left: 0;
+      right: 0;
+      z-index: 1000;
+      background: #fff;
+      border: 1px solid #c4c4c4;
+      border-radius: 4px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .rc-select.open .rc-select-panel { display: block; }
+    .rc-select-option {
+      padding: 6px 10px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .rc-select-option:hover { background: #f5f5f5; }
+    .rc-select-option.selected {
+      background: rgba(0, 122, 255, 0.08);
+      color: #007AFF;
+      font-weight: 500;
+    }
   </style>
 </head>
 

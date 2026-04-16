@@ -405,6 +405,14 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
             --gemini-input-bg: #ffffff;
             --gemini-shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
           }
+          .gemini-chat-body {
+            overflow: hidden !important;
+            min-width: 0 !important;
+            max-width: 100% !important;
+            width: 100% !important;
+            box-sizing: border-box !important;
+            contain: inline-size !important;
+          }
           .gemini-chat-wrapper {
             display: flex;
             flex-direction: column;
@@ -414,7 +422,36 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
             color: var(--gemini-text-primary);
             font-size: 14px;
             width: 100%;
+            min-width: 0;
+            overflow: hidden;
             box-sizing: border-box;
+            contain: inline-size;
+            position: relative;
+          }
+          .gemini-chat-resize-handle {
+            height: 6px;
+            cursor: ns-resize;
+            background: transparent;
+            position: relative;
+            flex-shrink: 0;
+            z-index: 20;
+            transition: background 0.15s;
+          }
+          .gemini-chat-resize-handle::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: 32px;
+            height: 3px;
+            border-radius: 2px;
+            background: var(--gemini-border-light);
+            transition: background 0.15s, width 0.15s;
+          }
+          .gemini-chat-resize-handle:hover::after {
+            background: #007AFF;
+            width: 48px;
           }
           .gemini-chat-header {
             padding: 12px 16px;
@@ -424,12 +461,15 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
             flex-direction: column;
             gap: 10px;
             z-index: 10;
+            min-width: 0;
+            overflow: hidden;
           }
           .gemini-chat-title-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
             gap: 8px;
+            min-width: 0;
           }
           .gemini-chat-title-group {
             display: flex;
@@ -465,10 +505,13 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
           .gemini-chat-subtitle {
             font-size: 11px;
             color: var(--gemini-text-secondary);
-            white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
             padding-left: 2px;
+            display: -webkit-box;
+            -webkit-line-clamp: 1;
+            -webkit-box-orient: vertical;
+            word-break: break-all;
           }
           
           /* Prompts Area */
@@ -524,10 +567,12 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
           .gemini-chat-messages {
             flex: 1;
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 16px;
             display: flex;
             flex-direction: column;
             gap: 16px;
+            min-width: 0;
           }
 
 
@@ -539,6 +584,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
             font-size: 14px;
             line-height: 1.5;
             word-wrap: break-word;
+            overflow-wrap: break-word;
             box-shadow: var(--gemini-shadow-sm);
             user-select: text;
           }
@@ -607,6 +653,7 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
             margin: 8px 0;
             border: 1px solid #374151;
             box-sizing: border-box;
+            max-width: 100%;
           }
           .gemini-chat-bubble pre code {
             background: transparent;
@@ -918,6 +965,12 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
     }
 
     body.innerHTML = "";
+    body.style.overflow = "hidden";
+    body.style.width = "100%";
+    body.style.minWidth = "0";
+    body.style.maxWidth = "100%";
+    body.style.boxSizing = "border-box";
+    body.style.contain = "inline-size";
 
     const wrapper = createElement("div");
     wrapper.setAttribute("class", "gemini-chat-wrapper");
@@ -1244,10 +1297,41 @@ function renderChat(body: HTMLElement, item: Zotero.Item, addon: Addon) {
     inputArea.appendChild(inputRow);
     inputArea.appendChild(hint);
 
+    const resizeHandle = createElement("div");
+    resizeHandle.setAttribute("class", "gemini-chat-resize-handle");
+    resizeHandle.title = "Drag to resize";
+
     wrapper.appendChild(header);
     wrapper.appendChild(messageList);
     wrapper.appendChild(inputArea);
+    wrapper.appendChild(resizeHandle);
     body.appendChild(wrapper);
+
+    // --- Drag-to-resize logic ---
+    let dragStartY = 0;
+    let dragStartH = 0;
+    const onMouseMove = (e: MouseEvent) => {
+      const delta = e.clientY - dragStartY;
+      const newH = Math.max(200, Math.min(2000, dragStartH + delta));
+      wrapper.style.height = newH + "px";
+    };
+    const onMouseUp = (e: MouseEvent) => {
+      doc.removeEventListener("mousemove", onMouseMove);
+      doc.removeEventListener("mouseup", onMouseUp);
+      const finalH = parseInt(wrapper.style.height, 10) || 500;
+      try {
+        Zotero.Prefs.set(config.prefsPrefix + ".chatHeight", String(finalH), true);
+      } catch (err) {
+        Zotero.debug(`[ResearchCopilot] Failed to save chatHeight: ${err}`);
+      }
+    };
+    resizeHandle.addEventListener("mousedown", (e: MouseEvent) => {
+      e.preventDefault();
+      dragStartY = e.clientY;
+      dragStartH = wrapper.getBoundingClientRect().height;
+      doc.addEventListener("mousemove", onMouseMove);
+      doc.addEventListener("mouseup", onMouseUp);
+    });
 
     const renderMessages = (forceScroll = false) => {
       const prevScrollTop = messageList.scrollTop;

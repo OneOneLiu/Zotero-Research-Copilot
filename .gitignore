@@ -19,3 +19,5 @@ build/
 # OS
 Thumbs.db
 .DS_Store
+
+local-proxy/

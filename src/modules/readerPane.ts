@@ -33,6 +33,7 @@ import {
   rewriteQueryForSearch,
   getFullAnalysisSettings,
   ensureGlobals as ensureAnalysisGlobals,
+  makeAbortError,
 } from "./multiPaperChatCore";
 import {
   compactDialogMessagesForRequest,
@@ -2300,7 +2301,7 @@ export async function* callAIStream(
   const userSignal = opts?.signal;
   // Covers fetch + full body read. Do NOT dispose after fetch alone — that cleared the timer and
   // left reader.read() with no deadline, so stalled streams hung forever with no error.
-  const { signal, dispose } = mergeUserAndTimeout(userSignal, 600000);
+  const { signal, dispose } = mergeUserAndTimeout(userSignal, 1800000); // 30 min — preview models can be slow
 
   // Prepare headers
   const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -2334,11 +2335,11 @@ export async function* callAIStream(
       while (true) {
         if (signal.aborted) {
           try { await reader.cancel(); } catch { /* ignore */ }
-          throw new DOMException("Aborted", "AbortError");
+          throw makeAbortError();
         }
         if (userSignal?.aborted) {
           try { await reader.cancel(); } catch { /* ignore */ }
-          throw new DOMException("Aborted", "AbortError");
+          throw makeAbortError();
         }
         const { done, value } = await reader.read();
         if (done) break;

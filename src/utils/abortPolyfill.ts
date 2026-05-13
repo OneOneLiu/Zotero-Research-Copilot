@@ -286,12 +286,20 @@ function abortableFetch(
   signal: AbortSignal,
 ): Promise<Response> {
   if (signal.aborted) {
-    return Promise.reject(new DOMException("Aborted", "AbortError"));
+    const err = typeof DOMException !== "undefined"
+      ? new DOMException("Aborted", "AbortError")
+      : Object.assign(new Error("Aborted"), { name: "AbortError" });
+    return Promise.reject(err);
   }
   const { signal: _omit, ...rest } = init;
   const p = fetchImpl(url as string, rest);
   return new Promise((resolve, reject) => {
-    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    const onAbort = () => {
+      const err = typeof DOMException !== "undefined"
+        ? new DOMException("Aborted", "AbortError")
+        : Object.assign(new Error("Aborted"), { name: "AbortError" });
+      reject(err);
+    };
     signal.addEventListener("abort", onAbort, { once: true });
     p.then(
       (res) => {

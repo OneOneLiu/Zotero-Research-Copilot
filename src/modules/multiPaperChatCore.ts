@@ -86,6 +86,15 @@ export function ensureGlobals() {
   if (!Zotero) throw new Error("Zotero is not available. Please reopen this window from the Zotero context menu.");
 }
 
+// ---------- Safe AbortError factory ----------
+// Some Zotero contexts (e.g. reader iframe sandbox) lack DOMException.
+export function makeAbortError(): Error {
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("Aborted", "AbortError");
+  }
+  return Object.assign(new Error("Aborted"), { name: "AbortError" });
+}
+
 // ---------- Markdown ----------
 
 let md: any = null;
@@ -271,7 +280,7 @@ function buildHeaders(s: ReturnType<typeof getFullAnalysisSettings>) {
   return h;
 }
 
-const TIMEOUT_MS = 300000; // 5 minutes
+const TIMEOUT_MS = 900000; // 15 minutes — preview models can be slow
 const MAX_RETRIES = 2;
 
 /** Extra attempts when fetch returns OK but body read / JSON.parse fails (e.g. Firefox: Content-Length exceeds body). */
@@ -324,7 +333,7 @@ export function mergeUserAndTimeout(user: AbortSignal | undefined, timeoutMs: nu
 async function fetchWithRetry(url: string, opts: RequestInit, retries = MAX_RETRIES, userSignal?: AbortSignal): Promise<Response> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (userSignal?.aborted) {
-      throw new DOMException("Aborted", "AbortError");
+      throw makeAbortError();
     }
     const { signal, dispose } = mergeUserAndTimeout(userSignal, TIMEOUT_MS);
     try {
@@ -332,7 +341,7 @@ async function fetchWithRetry(url: string, opts: RequestInit, retries = MAX_RETR
       dispose();
       if (res.status === 429 || res.status >= 500) {
         if (attempt < retries) {
-          if (userSignal?.aborted) throw new DOMException("Aborted", "AbortError");
+          if (userSignal?.aborted) throw makeAbortError();
           await delay(Math.min(2000 * Math.pow(2, attempt), 15000));
           continue;
         }
@@ -341,7 +350,7 @@ async function fetchWithRetry(url: string, opts: RequestInit, retries = MAX_RETR
     } catch (e: any) {
       dispose();
       if (userSignal?.aborted) {
-        throw new DOMException("Aborted", "AbortError");
+        throw makeAbortError();
       }
       if (e?.name === "AbortError") {
         if (attempt < retries) {
@@ -447,7 +456,7 @@ export async function* callAIStream(
     while (true) {
       if (userSignal?.aborted) {
         try { await reader.cancel(); } catch { /* ignore */ }
-        throw new DOMException("Aborted", "AbortError");
+        throw makeAbortError();
       }
       const { done, value } = await reader.read(); if (done) break;
       buf += dec.decode(value, { stream: true });
@@ -1239,7 +1248,7 @@ export async function runInitialAnalysis(
     await ensureRagDir();
     let ragBuilt = 0, ragCached = 0, ragFailed = 0;
     for (let i = 0; i < C.papers.length; i++) {
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      if (signal?.aborted) throw makeAbortError();
       const p = C.papers[i];
       const alreadyReady = C.ragIndices.has(p.id) || await hasRagIndex(p.id);
       setChatInnerHTML(ragBubble, `<strong>🔍 Phase 1/4 — Preparing search index — ${i + 1}/${C.papers.length}</strong><br />` +
@@ -1262,7 +1271,7 @@ export async function runInitialAnalysis(
     setChatInnerHTML(ragBubble, `⚠️ Phase 1/4 — Search index build error. Continuing without RAG support.`);
   }
 
-  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  if (signal?.aborted) throw makeAbortError();
 
   // === Phase 2: Question Understanding (AI call, with paper metadata) ===
   const quBubble = addMessageBubble("system", `<strong>🧠 Phase 2/4 — Analyzing research question...</strong>`);
@@ -1298,7 +1307,7 @@ export async function runInitialAnalysis(
     addMessageBubble("model", renderMd(quMd), quMd);
   }
 
-  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  if (signal?.aborted) throw makeAbortError();
 
   // === Phase 3: Per-paper extraction (AI calls, with question understanding context) ===
   const perPaperPrompt = settings.extractionPrompt
@@ -1397,7 +1406,7 @@ export async function runInitialAnalysis(
   }
   await Promise.all(workers);
 
-  if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+  if (signal?.aborted) throw makeAbortError();
 
   C.analysisDoc = extractions.join("\n\n---\n\n");
 
@@ -2281,7 +2290,7 @@ async function runToolCallLoop(
   const maxRounds = settings.maxToolRounds;
 
   for (let r = 0; r <= maxRounds; r++) {
-    if (userSignal?.aborted) throw new DOMException("Aborted", "AbortError");
+    if (userSignal?.aborted) throw makeAbortError();
     const payload = buildPayloadWithTools(settings, chatMsgs, userParts, rounds, tools);
 
     // Use streaming to enable progressive text rendering for the final response
@@ -2294,7 +2303,7 @@ async function runToolCallLoop(
     // Tool calls: execute them
     const results: string[] = [];
     for (const tc of streamResult.toolCalls) {
-      if (userSignal?.aborted) throw new DOMException("Aborted", "AbortError");
+      if (userSignal?.aborted) throw makeAbortError();
       if (onToolCall) onToolCall(tc);
       const result = await executeTool(tc.name, tc.args, settings);
       results.push(result);
@@ -2353,7 +2362,7 @@ async function streamingToolRound(
     while (true) {
       if (userSignal?.aborted) {
         try { await reader.cancel(); } catch { /* ignore */ }
-        throw new DOMException("Aborted", "AbortError");
+        throw makeAbortError();
       }
       const { done, value } = await reader.read();
       if (done) break;
